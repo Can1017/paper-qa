@@ -1,0 +1,164 @@
+name: Issue 1275 Ubuntu validation
+
+on:
+  push:
+    branches: [codex/issue-1275-ubuntu-ci]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  PYTHON_DOTENV_DISABLED: "1"
+  OPENAI_API_KEY: sk-test
+  ANTHROPIC_API_KEY: test
+  GEMINI_API_KEY: test
+  GOOGLE_API_KEY: test
+  SEMANTIC_SCHOLAR_API_KEY: test
+  CROSSREF_API_KEY: test
+  NVIDIA_API_KEY: test
+  LITELLM_LOCAL_MODEL_COST_MAP: "True"
+
+jobs:
+  regression:
+    name: Regression and checks (Python ${{ matrix.python }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.11", "3.13"]
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: 50fd4f2
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@v8.1.0
+        with:
+          python-version: ${{ matrix.python }}
+          enable-cache: true
+      - run: uv sync --locked
+      - name: Verify types and lint
+        run: |
+          uv run --no-sync mypy src packages tests/test_index_error_handling.py
+          uv run --no-sync pylint src packages
+          uv run --no-sync refurb src packages tests/test_index_error_handling.py
+      - name: Run local regression tests without external API access
+        run: |
+          unset HTTP_PROXY HTTPS_PROXY ALL_PROXY http_proxy https_proxy all_proxy
+          uv run --no-sync pytest -p no:name_of_plugin \
+            --record-mode=none --block-network \
+            --allowed-hosts='^127\.0\.0\.1$,^localhost$,^::1$' \
+            --basetemp /tmp/pqa-1275-regression \
+            tests/test_index_error_handling.py tests/test_configs.py tests/test_utils.py \
+            tests/test_cli.py::test_can_modify_settings \
+            tests/test_agents.py::test_getting_manifest \
+            tests/test_agents.py::test_settings_model_config \
+            tests/test_agents.py::test_tool_schema \
+            tests/test_agents.py::test_empty_index_without_index_rebuild \
+            packages/paper-qa-pypdf/tests -k 'not test_parse_pdf_to_pages' \
+            --junitxml=regression.xml -q --tb=short
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: regression-${{ matrix.python }}
+          path: regression.xml
+
+  full-suite:
+    name: Full suite (${{ matrix.target }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: baseline
+            ref: 57e89f7223b0960d5ee5ea048c69e3c47e088572
+          - target: patch
+            ref: 50fd4f2
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ matrix.ref }}
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@v8.1.0
+        with:
+          python-version: "3.11"
+          enable-cache: true
+      - run: uv sync --locked
+      - uses: actions/cache@v5
+        with:
+          path: ~/.cache/docling
+          key: ubuntu-docling-${{ hashFiles('uv.lock') }}
+      - name: Download the models used by the official CI
+        run: uv run --no-sync docling-tools models download rapidocr layout tableformer
+      - name: Run complete suites with the same offline constraints
+        env:
+          DOCLING_ARTIFACTS_PATH: /home/runner/.cache/docling/models
+        run: |
+          unset HTTP_PROXY HTTPS_PROXY ALL_PROXY http_proxy https_proxy all_proxy
+          set -o pipefail
+          uv run --no-sync pytest -p no:name_of_plugin \
+            --record-mode=none --block-network \
+            --allowed-hosts='^127\.0\.0\.1$,^localhost$,^::1$' \
+            --basetemp /tmp/pqa-1275-full \
+            -n 2 tests packages --junitxml=full.xml -q --tb=short 2>&1 | tee full.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: full-${{ matrix.target }}
+          path: |
+            full.xml
+            full.log
+
+  compare:
+    name: Compare baseline and patch failures
+    if: always()
+    needs: full-suite
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: full-*
+          path: reports
+      - name: Summarize differences
+        run: |
+          python - <<'PY'
+          import os
+          from pathlib import Path
+          import xml.etree.ElementTree as ET
+
+          def read(target):
+              path = Path("reports") / f"full-{target}" / "full.xml"
+              if not path.exists():
+                  raise SystemExit(f"Missing complete JUnit report for {target}; comparison is inconclusive")
+              cases = ET.parse(path).findall(".//testcase")
+              failures = {
+                  f"{case.get('classname')}::{case.get('name')}"
+                  for case in cases
+                  if case.find('failure') is not None or case.find('error') is not None
+              }
+              return cases, failures
+
+          base_cases, base_failures = read("baseline")
+          patch_cases, patch_failures = read("patch")
+          new = sorted(patch_failures - base_failures)
+          resolved = sorted(base_failures - patch_failures)
+          lines = [
+              "# Ubuntu baseline comparison",
+              "Both suites use placeholder credentials and block external API calls.",
+              f"Baseline: {len(base_cases)} test cases, {len(base_failures)} failures/errors.",
+              f"Patch: {len(patch_cases)} test cases, {len(patch_failures)} failures/errors.",
+              f"New failures: {len(new)}. Failures absent from patch: {len(resolved)}.",
+              "", "## New failures", *[f"- {name}" for name in new],
+              "", "## Failures absent from patch", *[f"- {name}" for name in resolved],
+              "", "## Failures shared with baseline",
+              *[f"- {name}" for name in sorted(base_failures & patch_failures)],
+          ]
+          summary = "\n".join(lines) + "\n"
+          print(summary)
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as stream:
+              stream.write(summary)
+          if new:
+              raise SystemExit("Patch introduced failures requiring investigation")
+          PY
