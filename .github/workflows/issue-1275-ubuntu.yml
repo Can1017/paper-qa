@@ -38,6 +38,8 @@ jobs:
           python-version: ${{ matrix.python }}
           enable-cache: true
       - run: uv sync --locked
+      - name: Download tokenizer vocabulary before blocking network access
+        run: uv run --no-sync python -c "import tiktoken; tiktoken.get_encoding('cl100k_base'); tiktoken.get_encoding('o200k_base')"
       - name: Verify types and lint
         run: |
           uv run --no-sync mypy src packages tests/test_index_error_handling.py
@@ -86,6 +88,8 @@ jobs:
           python-version: "3.11"
           enable-cache: true
       - run: uv sync --locked
+      - name: Download tokenizer vocabulary before blocking network access
+        run: uv run --no-sync python -c "import tiktoken; tiktoken.get_encoding('cl100k_base'); tiktoken.get_encoding('o200k_base')"
       - uses: actions/cache@v5
         with:
           path: ~/.cache/docling
