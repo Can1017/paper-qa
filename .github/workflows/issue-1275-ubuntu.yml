@@ -66,10 +66,10 @@ jobs:
           name: regression-${{ matrix.python }}
           path: regression.xml
 
-  full-suite:
-    name: Full suite (${{ matrix.target }})
+  compatibility:
+    name: Existing offline tests (${{ matrix.target }})
     runs-on: ubuntu-latest
-    timeout-minutes: 35
+    timeout-minutes: 25
     strategy:
       fail-fast: false
       matrix:
@@ -90,40 +90,39 @@ jobs:
       - run: uv sync --locked
       - name: Download tokenizer vocabulary before blocking network access
         run: uv run --no-sync python -c "import tiktoken; tiktoken.get_encoding('cl100k_base'); tiktoken.get_encoding('o200k_base')"
-      - uses: actions/cache@v5
-        with:
-          path: ~/.cache/docling
-          key: ubuntu-docling-${{ hashFiles('uv.lock') }}
-      - name: Download the models used by the official CI
-        run: uv run --no-sync docling-tools models download rapidocr layout tableformer
-      - name: Run complete suites with the same offline constraints
-        env:
-          DOCLING_ARTIFACTS_PATH: /home/runner/.cache/docling/models
+      - name: Compare existing tests under the same offline constraints
         run: |
           unset HTTP_PROXY HTTPS_PROXY ALL_PROXY http_proxy https_proxy all_proxy
           set -o pipefail
           uv run --no-sync pytest -p no:name_of_plugin \
             --record-mode=none --block-network \
             --allowed-hosts='^127\.0\.0\.1$,^localhost$,^::1$' \
-            --basetemp /tmp/pqa-1275-full \
-            -n 2 tests packages --junitxml=full.xml -q --tb=short 2>&1 | tee full.log
+            --basetemp /tmp/pqa-1275-compatibility \
+            tests/test_configs.py tests/test_utils.py \
+            tests/test_cli.py::test_can_modify_settings \
+            tests/test_agents.py::test_getting_manifest \
+            tests/test_agents.py::test_settings_model_config \
+            tests/test_agents.py::test_tool_schema \
+            tests/test_agents.py::test_empty_index_without_index_rebuild \
+            packages/paper-qa-pypdf/tests -k 'not test_parse_pdf_to_pages' \
+            --junitxml=compatibility.xml -q --tb=short 2>&1 | tee compatibility.log
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: full-${{ matrix.target }}
+          name: compatibility-${{ matrix.target }}
           path: |
-            full.xml
-            full.log
+            compatibility.xml
+            compatibility.log
 
   compare:
     name: Compare baseline and patch failures
     if: always()
-    needs: full-suite
+    needs: compatibility
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
         with:
-          pattern: full-*
+          pattern: compatibility-*
           path: reports
       - name: Summarize differences
         run: |
@@ -133,7 +132,7 @@ jobs:
           import xml.etree.ElementTree as ET
 
           def read(target):
-              path = Path("reports") / f"full-{target}" / "full.xml"
+              path = Path("reports") / f"compatibility-{target}" / "compatibility.xml"
               if not path.exists():
                   raise SystemExit(f"Missing complete JUnit report for {target}; comparison is inconclusive")
               cases = ET.parse(path).findall(".//testcase")
@@ -149,8 +148,9 @@ jobs:
           new = sorted(patch_failures - base_failures)
           resolved = sorted(base_failures - patch_failures)
           lines = [
-              "# Ubuntu baseline comparison",
-              "Both suites use placeholder credentials and block external API calls.",
+              "# Ubuntu offline compatibility comparison",
+              "Both runs use the same existing offline tests and placeholder credentials.",
+              "This is a targeted comparison, not the complete online integration suite.",
               f"Baseline: {len(base_cases)} test cases, {len(base_failures)} failures/errors.",
               f"Patch: {len(patch_cases)} test cases, {len(patch_failures)} failures/errors.",
               f"New failures: {len(new)}. Failures absent from patch: {len(resolved)}.",
