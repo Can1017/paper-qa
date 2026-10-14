@@ -1,0 +1,90 @@
+name: Index path deletion Ubuntu validation
+
+on:
+  push:
+    branches: [codex/index-path-deletion-ci]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: Ubuntu checks (Python ${{ matrix.python }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.11", "3.13"]
+    defaults:
+      run:
+        working-directory: source
+    env:
+      UV_PYTHON: ${{ matrix.python }}
+      PYTHON_DOTENV_DISABLED: "1"
+      LITELLM_LOCAL_MODEL_COST_MAP: "True"
+      OPENAI_API_KEY: sk-local-validation
+      ANTHROPIC_API_KEY: sk-local-validation
+      GEMINI_API_KEY: sk-local-validation
+      GOOGLE_API_KEY: sk-local-validation
+      SEMANTIC_SCHOLAR_API_KEY: sk-local-validation
+      CROSSREF_API_KEY: sk-local-validation
+      NVIDIA_API_KEY: sk-local-validation
+    steps:
+      - name: Check out fork-only validation files
+        uses: actions/checkout@v6
+        with:
+          path: validation
+      - name: Check out the exact proposed fix
+        uses: actions/checkout@v6
+        with:
+          ref: ce6446dd5d433609704d6821090a33c589cbbbe6
+          path: source
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@v8.1.0
+        with:
+          version: "0.9.8"
+          python-version: ${{ matrix.python }}
+          enable-cache: true
+          cache-dependency-glob: source/uv.lock
+      - name: Set isolated validation paths
+        run: |
+          echo "PQA_HOME=$HOME/.cache/pqa-index-deletion-${{ matrix.python }}" >> "$GITHUB_ENV"
+          git show 57e89f7223b0960d5ee5ea048c69e3c47e088572:src/paperqa/agents/search.py > "$RUNNER_TEMP/upstream-search.py"
+          echo "PQA_DELETION_BASELINE=$RUNNER_TEMP/upstream-search.py" >> "$GITHUB_ENV"
+          test "$(git rev-parse HEAD)" = ce6446dd5d433609704d6821090a33c589cbbbe6
+      - name: Install the official locked environment
+        run: uv sync --frozen
+      - name: Prepare public tokenizer files before blocking the network
+        run: uv run --no-sync python -c "import tiktoken; tiktoken.get_encoding('cl100k_base'); tiktoken.get_encoding('o200k_base')"
+      - name: Run repository checks on the proposed diff
+        run: |
+          uv run --no-sync prek run --files src/paperqa/agents/search.py pyproject.toml uv.lock
+          uv run --no-sync mypy src packages/paper-qa-pypdf/src packages/paper-qa-pymupdf/src
+          uv run --no-sync pylint src/paperqa/agents/search.py
+          uv run --no-sync refurb src/paperqa/agents/search.py
+          git diff --exit-code
+      - name: Build the proposed package
+        run: uv build --out-dir "$RUNNER_TEMP/pqa-dist"
+      - name: Run offline deletion and existing tests
+        run: |
+          unset HTTP_PROXY HTTPS_PROXY ALL_PROXY http_proxy https_proxy all_proxy
+          uv run --no-sync pytest -p no:name_of_plugin -o addopts='' \
+            --typeguard-packages=paperqa --record-mode=none --block-network \
+            --allowed-hosts='^127\.0\.0\.1$,^localhost$,^::1$' \
+            --basetemp "$RUNNER_TEMP/pqa-deletion-tests" --timeout=90 \
+            "$GITHUB_WORKSPACE/validation/.github/validation/index-path-deletion/test_deletion.py" \
+            "$GITHUB_WORKSPACE/validation/.github/validation/index-path-deletion/test_pr_review.py" \
+            tests/test_configs.py tests/test_utils.py \
+            tests/test_agents.py::test_settings_model_config \
+            tests/test_agents.py::test_tool_schema \
+            tests/test_agents.py::test_answers_are_striped \
+            tests/test_agents.py::test_empty_index_without_index_rebuild \
+            tests/test_agents.py::test_env_from_name \
+            --junitxml="$RUNNER_TEMP/deletion-results.xml" -q --tb=short
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: index-deletion-${{ matrix.python }}
+          path: ${{ runner.temp }}/deletion-results.xml
