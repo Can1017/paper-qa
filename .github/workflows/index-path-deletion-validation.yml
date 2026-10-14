@@ -73,7 +73,7 @@ jobs:
           uv run --no-sync pytest -p no:name_of_plugin -o addopts='' \
             --typeguard-packages=paperqa --record-mode=none --block-network \
             --allowed-hosts='^127\.0\.0\.1$,^localhost$,^::1$' \
-            --basetemp "$RUNNER_TEMP/pqa-deletion-tests" --timeout=90 \
+            --basetemp "/tmp/pqa-deletion-tests-${{ matrix.python }}" --timeout=90 \
             "$GITHUB_WORKSPACE/validation/.github/validation/index-path-deletion/test_deletion.py" \
             "$GITHUB_WORKSPACE/validation/.github/validation/index-path-deletion/test_pr_review.py" \
             tests/test_configs.py tests/test_utils.py \
