@@ -39,7 +39,7 @@ jobs:
       - name: Check out the exact proposed fix
         uses: actions/checkout@v6
         with:
-          ref: 6da6172c8d8fe1db960f8fe3e9b624b0347d8896
+          ref: a6139f22bcfaa5de94567fd87c4fa1cbe7091601
           path: source
           fetch-depth: 0
       - uses: astral-sh/setup-uv@v8.1.0
@@ -53,7 +53,7 @@ jobs:
           echo "PQA_HOME=$HOME/.cache/pqa-index-deletion-${{ matrix.python }}" >> "$GITHUB_ENV"
           git show 57e89f7223b0960d5ee5ea048c69e3c47e088572:src/paperqa/agents/search.py > "$RUNNER_TEMP/upstream-search.py"
           echo "PQA_DELETION_BASELINE=$RUNNER_TEMP/upstream-search.py" >> "$GITHUB_ENV"
-          test "$(git rev-parse HEAD)" = 6da6172c8d8fe1db960f8fe3e9b624b0347d8896
+          test "$(git rev-parse HEAD)" = a6139f22bcfaa5de94567fd87c4fa1cbe7091601
       - name: Install the official locked environment
         run: uv sync --frozen
       - name: Prepare public tokenizer files before blocking the network
